@@ -1,5 +1,5 @@
 module PSDTools
 
-# Write your package code here.
+include("amplitude_extraction.jl")# Write your package code here.
 
 end
