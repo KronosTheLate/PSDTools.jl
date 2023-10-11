@@ -3,6 +3,7 @@ module PSDTools
 # Write your package code here.
 
 include("amplitude_extraction.jl")
+include("read_mcc_data.jl")
 
 
 using Dates
