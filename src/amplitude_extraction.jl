@@ -63,6 +63,6 @@ function dft_probe(sig, f_probe, fs)
 	T_probe = 1/f_probe
 	n_oscillations = signal_duration/T_probe
 	k = n_oscillations
-	return sum(sig[n]*cis(-2π*k*(n-1)/N) for n in eachindex(sig))/N*2
+	return abs(sum(sig[n]*cis(-2π*k*(n-1)/N) for n in eachindex(sig))/N*2)
 end
 export dft_probe
