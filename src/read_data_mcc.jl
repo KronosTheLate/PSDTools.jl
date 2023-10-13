@@ -1,15 +1,11 @@
+using DataStructures
 using PythonCall
 
 try
     global daqhats = pyimport("daqhats")
+    global daqhats_utils = pyimport("daqhats_utils")
 catch e
-    @warn "Encountered error while importing 'daqhats'. Ensure that you can launch python and call 'import daqhats' without errors.\n\nData-collection functionality will error until this is fixed"
-end
-
-try
-    global daqhats = pyimport("daqhats_utils")
-catch e
-    @warn "Encountered error while importing 'daqhats'. Ensure that you can launch python and call 'import daqhats' without errors.\n\nData-collection functionality will error until this is fixed"
+    @warn "Encountered error while importing 'daqhats' and 'daqhats_utils'. Ensure that you can launch python and call 'import daqhats' and 'import daqhats_utils' without errors.\n\nData-collection functionality will error until this is fixed"
 end
 
 function aquire_data!(data_channel::Channel, controlling_event::Threads.Event)
@@ -334,7 +330,8 @@ if __name__ == '__main__':
 
 =#
 
-
+# No need to split this into two functions
+#=
 function aquire_data_dummy!(data_channel::Channel, controlling_event::Threads.Event, freqs, fs)
     # No setup required for dummy :)
     try
@@ -345,55 +342,53 @@ function aquire_data_dummy!(data_channel::Channel, controlling_event::Threads.Ev
     end
 end
 export aquire_data_dummy!
+=#
 
-function my_calculation(N=2_000)
-    A = rand(N, N)
-    b = rand(N)
-    
-    x = inv(A)*b
-    return sum(x)
-end
-export my_calculation
-
-function read_and_put_data_dummy!(data_channel, controlling_event, freqs, fs)
+function schedule_data_collector_dummy!(data_channel, controlling_event, lamps, fs)
+    k = 0  # Fake discrete time index
+    Ts = 1/fs  # Sample period
+    A_rand = 1
     Threads.@spawn try
         while true  # Start loop as a task that can move between threads
-            
+            t0 = time_ns()
             # Pause here untill we call `notify(controlling_event)`
             # This is what allows a pausable `while true` loop.
             wait(controlling_event)
-            
-            t0 = time_ns()
-
-            rel_amplitudes = (1, 2, 3, 4)
-            electrode_measurements = tuple((sum(A*sin(2π*freq*time_ns()*1e9) for freq in freqs) for A in rel_amplitudes)...)
+            t = Ts*k
+            electrode_measurements = collect_tuple(sum(
+                    lamps[lamp_ind].As[electrode_ind]*sin(2π*lamps[lamp_ind].f*t) + A_rand*rand()
+                for lamp_ind in eachindex(lamps)) 
+                for electrode_ind in 1:4
+            )
+            # electrode_measurements = collect_tuple(sum(A*sin(2π*freq*t) for freq in freqs) for A in rel_amplitudes)
             put!(data_channel, electrode_measurements)
+            k += 1
 
-            while (time_ns()-t0) < 1/fs * 1e9
+            while (time_ns()-t0)/1e9 < Ts
                 # waiting for 1 sample period to elapse, 
-                # including calculation time
             end
         end
     catch e
-        @warn "Encountered an error in the data collection loop. Rethrowing the error."
+        @info "Encountered an error in the data collection loop. Printing and rethrowing the error."
+        println(e)
         rethrow(e)
-    finally
-        # No cleanup for dummy-data
+        #No cleanup for dummy-data
     end 
 end
+export schedule_data_collector_dummy!
 
-using DataStructures
-function consume_dummy_data!(raw_channel::Channel, controlling_event::Base.Event, input_buffer::CircularBuffer, output_buffer::CircularBuffer, processing_function, n_frequencies)
+function schedule_data_processor!(voltages_channel::Channel, controlling_event::Base.Event, input_buffer::CircularBuffer, output_channel::Channel, processing_function, freqs_probe)
     # `processing_function` should take as it's only argument a signal from a single electrode, 
     # and return a tuple of estimated RMS voltages, with one element per frequency
     
     # The minibuffer needs to be a vector to allow changing its values.
     # It contains tuples because tuples are cheap (no allocations)
-    voltages_minibuffer = Vector{NTuple{n_frequencies, Float32}}(undef, 4)
+    
+    amplitudes_minibuffer = Vector{NTuple{length(freqs_probe), eltype(eltype(voltages_channel))}}(undef, 4)
 
     # We define a function that processes the data from electrode `i`
     # It will be used to spawn tasks
-    function processing_task!(i, minibuf=voltages_minibuffer)
+    function processing_task!(i, minibuf=amplitudes_minibuffer)
         result_from_channel_i = processing_function(getindex.(input_buffer, i))
         minibuf[i] = result_from_channel_i
         return nothing
@@ -401,34 +396,67 @@ function consume_dummy_data!(raw_channel::Channel, controlling_event::Base.Event
 
     # We want to 
     # 1) Accumulate as many samples as can fit into `input_buffer`
-    # 2) Process all samples, getting `n_frequencies` position estimates
+    # 2) Process all samples, getting `length(freqs_probe)` position estimates
     # 3) Get new samples
     # 4) Go to step 2
 
     # We spawn a single task that runs in a `while true` loop. 
     # This function will remain inside this loop forever.
     # In each loop, this task will create 4 tasks that process data mulithreaded
-    Threads.@spawn while true
-        while !isfull(input_buffer)
-            push!(input_buffer, take!(raw_channel))
-        end
-        wait(controlling_event)
-        tasks = [Threads.@spawn processing_task!(i) for i in eachindex(voltages_minibuffer)]
-        
-        # Wait until all processing is finnished
-        foreach(wait, tasks)  # Calls `wait` on each element in `tasks`
+    Threads.@spawn try
+        while true
+            if !controlling_event.set
+                # If the controlling event is not set, we are about to wait.
+                # This means that the next samples will be taken later, breaking 
+                # continuity with the samples we have. We therefore discard 
+                # the samples currently in `input_buffer`
+                empty!(input_buffer)
+            end
+            wait(controlling_event)
+            while !isfull(input_buffer)
+                push!(input_buffer, take!(voltages_channel))
+            end
+            tasks = [Threads.@spawn processing_task!(i) for i in eachindex(amplitudes_minibuffer)]
+            
+            # Wait until all processing is finnished
+            foreach(wait, tasks)  # Calls `wait` on each element in `tasks`
 
-        calculated_POCs = tuple((calculate_POC(getindex.(voltages_minibuffer, i)...) for i in 1:n_frequencies)...)
-        
-        println("Calculated position freq 1: ", calculated_POCs[1])
-        println("Calculated position freq 2: ", calculated_POCs[2])
-        push!(output_buffer, calculated_POCs)
+            calculated_POCs = collect_tuple(calculate_POC(getindex.(amplitudes_minibuffer, i)...) for i in eachindex(freqs_probe))
+            
+            put!(output_channel, calculated_POCs)
 
-        # Put any available samples into input buffer, so that 
-        # they are included in next processing loop
-        while raw_channel.n_avail_items > 0
-            push!(input_buffer, take!(raw_channel))
+            # Put any available samples into input buffer, so that 
+            # they are included in next processing loop
+            while !isempty(voltages_channel) > 0
+                push!(input_buffer, take!(voltages_channel))
+            end
         end
+    catch e
+        @info "Encountered an error in the data processing loop. Printing and rethrowing the error."
+        println(e)
+        rethrow(e)
     end
 end
-export consume_dummy_data!
+export schedule_data_processor!
+
+
+function schedule_data_consumer!(controlling_event::Base.Event, output_channel::Channel, positions_buffer::CircularBuffer)
+    Threads.@spawn try
+        while true
+            wait(controlling_event)
+            while !isempty(output_channel)
+                push!(positions_buffer, take!(output_channel))
+            end
+            # `result` will be a
+            # result = take!(output_channel)
+            # @assert length(result)==length(freqs_probe)
+            # estimates = zip(freqs_probe, result)
+            # println.(estimates)
+        end
+    catch e
+        @info "Encountered an error in the data consumer loop. Printing and rethrowing the error."
+        println(e)
+        rethrow(e)
+    end
+end
+export schedule_data_consumer!
