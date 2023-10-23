@@ -39,3 +39,23 @@ into
 """
 collect_tuple(gen::Base.Generator) = tuple(gen...)
 export collect_tuple
+
+# A function `errormonitor` was introduced in Julia 1.7, 
+# which is very useful for working with tasks. The LongTimeSupport 
+# version of Julia is currently 1.6, and the only one with 
+# prebuildt binaries for the Raspberry Pi platform. 
+if VERSION < v"1.7-"
+	function errormonitor(task)
+		Base.Threads.@spawn try
+			wait(task)
+		catch err
+			bt = catch_backtrace()
+			showerror(stderr, err, bt)
+			rethrow()
+		end
+	end
+	export errormonitor
+end
+
+toggle!(x::Ref{Bool}) = (x[] = !x[]; x[])
+export toggle!

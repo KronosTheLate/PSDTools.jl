@@ -1,11 +1,12 @@
 using DataStructures
 using PythonCall
+using Dates
 
 try
     global daqhats = pyimport("daqhats")
     global daqhats_utils = pyimport("daqhats_utils")
 catch e
-    @warn "Encountered error while importing 'daqhats' and 'daqhats_utils'. Ensure that you can launch python and call 'import daqhats' and 'import daqhats_utils' without errors.\n\nData-collection functionality will error until this is fixed"
+    @warn "Encountered error while importing 'daqhats' and 'daqhats_utils'. Ensure that you can launch python and call 'import daqhats' and 'import daqhats_utils' without errors.\n\nData-collection functionality will error until this is fixed."
 end
 
 function aquire_data!(data_channel::Channel, controlling_event::Threads.Event)
@@ -45,9 +46,9 @@ function aquire_data!(data_channel::Channel, controlling_event::Threads.Event)
         hat.a_in_scan_start(channel_mask, samples_per_channel, scan_rate, options)
         hat2.a_in_scan_start(channel_mask2, samples_per_channel, scan_rate, options)
         read_and_put_data!(data_channel, controlling_event, scan_rate, hat, hat2, num_channels)
-    catch e
-        @warn "Encountered an error when when starting HAT-scans. Rethrowing the error."
-        rethrow(e)
+    catch
+        @warn "Encountered an error when when starting HAT-scans. Call `errormonitor` on the relevant task to see the full error."
+        rethrow()
     end
 end
 export aquire_data!
@@ -118,9 +119,9 @@ function read_and_put_data!(data_channel, controlling_event, scan_rate, hat, hat
                 
             end
         end
-    catch e
-        @warn "Encountered an error during data collection loop. Rethrowing the error."
-        rethrow(e)
+    catch 
+        @warn "Encountered an error during data collection loop. Call `errormonitor` on the relevant task to see the full error."
+        rethrow()
     finally  # Perform cleanup no matter how infinite loop exits
         hat.a_in_scan_stop()
         hat.a_in_scan_cleanup()       
@@ -336,9 +337,9 @@ function aquire_data_dummy!(data_channel::Channel, controlling_event::Threads.Ev
     # No setup required for dummy :)
     try
         read_and_put_data_dummy!(data_channel, controlling_event, freqs, fs)
-    catch e
-        @warn "Encountered an error when when starting HAT-scans. Rethrowing the error."
-        rethrow(e)
+    catch
+        @warn "Encountered an error when when starting HAT-scans. Call `errormonitor` on the relevant task to see the full error."
+        rethrow()
     end
 end
 export aquire_data_dummy!
@@ -368,10 +369,10 @@ function schedule_data_collector_dummy!(data_channel, controlling_event, lamps, 
                 # waiting for 1 sample period to elapse, 
             end
         end
-    catch e
-        @info "Encountered an error in the data collection loop. Printing and rethrowing the error."
+    catch
+        @info "Encountered an error in the data collection loop. Call `errormonitor` on the relevant task to see the full error."
         println(e)
-        rethrow(e)
+        rethrow()
         #No cleanup for dummy-data
     end 
 end
@@ -403,6 +404,7 @@ function schedule_data_processor!(voltages_channel::Channel, controlling_event::
     # We spawn a single task that runs in a `while true` loop. 
     # This function will remain inside this loop forever.
     # In each loop, this task will create 4 tasks that process data mulithreaded
+    time_initial = time_ns()
     Threads.@spawn try
         while true
             if !controlling_event.set
@@ -413,6 +415,7 @@ function schedule_data_processor!(voltages_channel::Channel, controlling_event::
                 empty!(input_buffer)
             end
             wait(controlling_event)
+            time_started_processing = time_ns()-time_initial # We will attach timestamp to each position
             while !isfull(input_buffer)
                 push!(input_buffer, take!(voltages_channel))
             end
@@ -420,10 +423,9 @@ function schedule_data_processor!(voltages_channel::Channel, controlling_event::
             
             # Wait until all processing is finnished
             foreach(wait, tasks)  # Calls `wait` on each element in `tasks`
-
             calculated_POCs = collect_tuple(calculate_POC(getindex.(amplitudes_minibuffer, i)...) for i in eachindex(freqs_probe))
             
-            put!(output_channel, calculated_POCs)
+            put!(output_channel, time_started_processing=>calculated_POCs)
 
             # Put any available samples into input buffer, so that 
             # they are included in next processing loop
@@ -431,10 +433,9 @@ function schedule_data_processor!(voltages_channel::Channel, controlling_event::
                 push!(input_buffer, take!(voltages_channel))
             end
         end
-    catch e
-        @info "Encountered an error in the data processing loop. Printing and rethrowing the error."
-        println(e)
-        rethrow(e)
+    catch
+        @info "Encountered an error in the data processing loop. Call `errormonitor` on the relevant task to see the full error."
+        rethrow()
     end
 end
 export schedule_data_processor!
@@ -453,10 +454,9 @@ function schedule_data_consumer!(controlling_event::Base.Event, output_channel::
             # estimates = zip(freqs_probe, result)
             # println.(estimates)
         end
-    catch e
-        @info "Encountered an error in the data consumer loop. Printing and rethrowing the error."
-        println(e)
-        rethrow(e)
+    catch
+        @info "Encountered an error in the data consumer loop. Call `errormonitor` on the relevant task to see the full error."
+        rethrow()
     end
 end
 export schedule_data_consumer!
