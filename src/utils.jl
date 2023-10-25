@@ -40,22 +40,62 @@ into
 collect_tuple(gen::Base.Generator) = tuple(gen...)
 export collect_tuple
 
+toggle!(x::Ref{Bool}) = (x[] = !x[]; x[])
+export toggle!
+
 # A function `errormonitor` was introduced in Julia 1.7, 
 # which is very useful for working with tasks. The LongTimeSupport 
 # version of Julia is currently 1.6, and the only one with 
 # prebuildt binaries for the Raspberry Pi platform. 
 if VERSION < v"1.7-"
-	function errormonitor(task)
-		Base.Threads.@spawn try
-			wait(task)
-		catch err
-			bt = catch_backtrace()
-			showerror(stderr, err, bt)
-			rethrow()
+	@eval PSDTools begin
+		"""
+			errormonitor(task)
+		"""
+		function errormonitor(task)
+			Base.Threads.@spawn try
+				wait(task)
+			catch err
+				bt = catch_backtrace()
+				showerror(stderr, err, bt)
+				rethrow()
+			end
 		end
+		export errormonitor
 	end
-	export errormonitor
 end
 
-toggle!(x::Ref{Bool}) = (x[] = !x[]; x[])
-export toggle!
+# A macro `@lock` was introduced in v1.7.
+if VERSION < v"1.7-"
+	@eval PSDTools begin
+		"""
+		    @lock l expr
+
+		Macro version of `lock(f, l::AbstractLock)` but with `expr` instead of `f` function.
+		Expands to:
+		```julia
+		lock(l)
+		try
+		    expr
+		finally
+		    unlock(l)
+		end
+		```
+		This is similar to using [`lock`](@ref) with a `do` block, but avoids creating a closure
+		and thus can improve the performance.
+		"""
+		macro lock(l, expr)
+		    quote
+		        temp = $(esc(l))
+		        lock(temp)
+		        try
+		            $(esc(expr))
+		        finally
+		            unlock(temp)
+		        end
+		    end
+		end
+		export @lock
+	end
+end
+
