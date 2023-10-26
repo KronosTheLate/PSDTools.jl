@@ -63,27 +63,11 @@ function kernel_store_POCs_in_buffer!(POCs_channel::Channel, POCs_buffer::Circul
 end
 export kernel_store_POCs_in_buffer!
 
-
 using PythonCall
-export PythonCall
-daqhats = try
-        pyimport("daqhats")
-catch e
-    @warn "Encountered error while importing 'daqhats'. Ensure that you can launch python and call 'import daqhats' without errors.\n\nData-collection functionality will error until this is fixed."
-    return "error"
-end
-
-sys = pyimport("sys")
-sys.path.append("/home/thetaoptec/daqhats/examples/python/mcc128")  # Required to get daqhats_utils on path
-
-daqhats_utils = try
-        pyimport("daqhats_utils")
-catch e
-    @warn "Encountered error while importing 'daqhats_utils'. Ensure that you can launch python and call 'import daqhats_utils' without errors.\n\nData-collection functionality will error until this is fixed."
-    return "error"
-end
 
 """
+	setup_mcc128(fs, daqhats, daqhats_utils)
+	
 Example usage:
 begin
 	setup_parameters = setup_mcc128()
@@ -102,45 +86,51 @@ begin
 	end
 end
 """
-function setup_mcc128(fs=25_000)
+function setup_mcc128(fs, daqhats, daqhats_utils)
+    fs = 25_000
     channels = [2,3]
     channel_mask = daqhats_utils.chan_list_to_mask(channels)
     num_channels = length(channels)
     channels2 = [0,1]
     channel_mask2 = daqhats_utils.chan_list_to_mask(channels2)
-
-
-    input_mode = daqhats.AnalogInputMode.DIFF
-    input_range = daqhats.AnalogInputRange.BIP_10V
-
+   
+   
     samples_per_channel = 1024
-
-    options = daqhats.OptionFlags.CONTINUOUS
-
-    
-    # Select an MCC 128 HAT device to use.
-    #address = select_hat_device(HatIDs.MCC_128)
+   
     hat = daqhats.mcc128(7)
     hat2 = daqhats.mcc128(2)
-    # print(adress)
+   
+    input_mode = daqhats.AnalogInputMode.DIFF
+    input_range = daqhats.AnalogInputRange.BIP_10V
+    
     hat.a_in_mode_write(input_mode)
     hat.a_in_range_write(input_range)
-    
+   
     hat2.a_in_mode_write(input_mode)
     hat2.a_in_range_write(input_range)
     
     scan_rate = fs
     read_request_size = 2096
-    
     # When doing a continuous scan, the timeout value will be ignored in the
     # call to a_in_scan_read because we will be requesting that all available
     # samples (up to the default buffer size) be returned.
     timeout = 5.0
+	
     actual_scan_rate = hat.a_in_scan_actual_rate(num_channels, scan_rate)
     actual_scan_rate2 = hat2.a_in_scan_actual_rate(num_channels, scan_rate)
-	#! define setup_parameters
+
+	options = daqhats.OptionFlags.CONTINUOUS
+
+	# Because we start the scan here, every 
+	# `setup_mcc128` has to be matched by a 
+	# `teardown_mcc128` to snap out of the scan
+	hat.a_in_scan_start(channel_mask, samples_per_channel, scan_rate, options)
+	hat2.a_in_scan_start(channel_mask2, samples_per_channel, scan_rate, options)
+	
+	setup_parameters = (;daqhats, daqhats_utils, hat, hat2, read_request_size, timeout, options, num_channels)
 	return setup_parameters
 end
+export setup_mcc128
 
 function teardown_mcc128(setup_parameters)
 	setup_parameters.hat.a_in_scan_stop()
@@ -148,21 +138,23 @@ function teardown_mcc128(setup_parameters)
     setup_parameters.hat2.a_in_scan_stop()
     setup_parameters.hat2.a_in_scan_cleanup() 
 end
+export teardown_mcc128
 
 """
-    kernel_get_raw_data!
+    kernel_get_raw_data!(voltages_channel, setup_parameters)
     
 Docstring goes here
 """
 function kernel_get_raw_data!(voltages_channel, setup_parameters)
+	p = setup_parameters  # shorter name for internal use
 	
-	read_result = setup_parameters.hat.a_in_scan_read(setup_parameters.read_request_size, setup_parameters.timeout)
-	read_result2 = setup_parameters.hat2.a_in_scan_read(setup_parameters.read_request_size, setup_parameters.timeout)
-
-	samples_read_per_channel = round(Int, length(read_result.data) / num_channels)
+	read_result = p.hat.a_in_scan_read(p.read_request_size, setup_parameters.timeout)
+	read_result2 = p.hat2.a_in_scan_read(p.read_request_size, setup_parameters.timeout)
+	
+	samples_read_per_channel = length(read_result.data) / p.num_channels |> round |> Int
 
 	#sanity-check. This should be removed if the warning is never printed.
-	samples_read_per_channel2 = round(Int, length(read_result2.data) / num_channels)
+	samples_read_per_channel2 = length(read_result2.data) / p.num_channels |> round |> Int
 	if samples_read_per_channel != samples_read_per_channel2
 	    @warn "A different number of samples was read for channel1 and channel2"
 	end
@@ -170,19 +162,30 @@ function kernel_get_raw_data!(voltages_channel, setup_parameters)
 	if samples_read_per_channel > 0
 	    for i in 0:samples_read_per_channel-1
 	        # We collect a sample from each electrode into a `sample_set`
-	        sample_set_python = (read_result.data[i], read_result.data[i+1], read_result.data2[i], read_result.data2[i+1])
+	        sample_set_python = (read_result.data[i], read_result.data[i+1], read_result2.data[i], read_result2.data[i+1])
 	        
 	        # We convert the data from python datatypes to julia datatypes
 	        sample_set_julia = Base.Fix1(pyconvert, Float32).(sample_set_python)
 	        
 	        # We put individual sample-sets into `data_channel`, 
 	        # for consuption by another thread/task
+	        
 	        put!(voltages_channel, sample_set_julia)
 	    end
 	end
 end
+export kernel_get_raw_data!
 
-
+function bla(fs, daqhats, daqhats_utils, voltages_channel)
+	setup_parameters = setup_mcc128(fs, daqhats, daqhats_utils)
+	try
+        kernel_get_raw_data!(voltages_channel, setup_parameters)
+    finally
+		teardown_mcc128(setup_parameters)
+    end
+    return nothing
+end
+export bla
 # Original Python Script:
 
 #=
