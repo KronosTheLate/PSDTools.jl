@@ -40,8 +40,23 @@ into
 collect_tuple(gen::Base.Generator) = tuple(gen...)
 export collect_tuple
 
-toggle!(x::Ref{Bool}) = (x[] = !x[]; x[])
-export toggle!
+function launch_pluto()
+	try 
+		@eval using Pluto
+	catch e
+		@warn "Encountered error while running `using Pluto`. Rethrowing."
+		rethrow()
+	end
+	return Pluto.run(
+		launch_browser=false, 				# no point in launching browser on the pi
+		dismiss_update_notification=true, 	# If not, we will get annying notification often
+		threads=4, 							# Use all the Pi's 4 threads
+		capture_stdout=false, 				# Prefer printing to terminal. I find it cleaner
+		require_secret_for_access = false,  # Allows pasting of URL without secret. Remove for production
+		host="0.0.0.0",						# Allows connections from other computers that dont run the notebook-server
+	)
+end
+export launch_pluto
 
 # A function `errormonitor` was introduced in Julia 1.7, 
 # which is very useful for working with tasks. The LongTimeSupport 

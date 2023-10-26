@@ -65,12 +65,22 @@ export kernel_store_POCs_in_buffer!
 
 
 using PythonCall
-
-try
-    global daqhats = pyimport("daqhats")
-    global daqhats_utils = pyimport("daqhats_utils")
+export PythonCall
+daqhats = try
+        pyimport("daqhats")
 catch e
-    @warn "Encountered error while importing 'daqhats' and 'daqhats_utils'. Ensure that you can launch python and call 'import daqhats' and 'import daqhats_utils' without errors.\n\nData-collection functionality will error until this is fixed."
+    @warn "Encountered error while importing 'daqhats'. Ensure that you can launch python and call 'import daqhats' without errors.\n\nData-collection functionality will error until this is fixed."
+    return "error"
+end
+
+sys = pyimport("sys")
+sys.path.append("/home/thetaoptec/daqhats/examples/python/mcc128")  # Required to get daqhats_utils on path
+
+daqhats_utils = try
+        pyimport("daqhats_utils")
+catch e
+    @warn "Encountered error while importing 'daqhats_utils'. Ensure that you can launch python and call 'import daqhats_utils' without errors.\n\nData-collection functionality will error until this is fixed."
+    return "error"
 end
 
 """
