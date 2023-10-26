@@ -1,194 +1,122 @@
-using DataStructures
-
-let k=0  # Essentially allows `k` to be an internal state in the function
-    """
-        kernel_get_raw_data_dummy!(data_channel, fs, lamps, A_rand=1)
-
-    Compute signal from lamps in `lamps`. Increment "time" by 1/fs each call.
-    """
-    global function kernel_get_raw_data_dummy!(voltages_channel, fs, lamps, A_rand=1)
-        t0 = time_ns()
-        
-        Ts = 1/fs  # Sample period
-        t = k*Ts
-
-        electrode_measurements = collect_tuple(sum(
-                lamps[lamp_ind].As[electrode_ind]*sin(2π*lamps[lamp_ind].f*t) + A_rand*rand()
-            for lamp_ind in eachindex(lamps)) 
-            for electrode_ind in 1:4
-        )
-        put!(voltages_channel, electrode_measurements)
-        k += 1
-
-        while (time_ns()-t0)/1e9 < Ts
-            # waiting for 1 sample period to elapse, 
-        end
-    end
-end
-export kernel_get_raw_data_dummy!
-
-"""
-    kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel::Channel, amplitudes_minibuffer, estimate_amplitudes_electrode_i!)
-"""
-function kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel::Channel{Pair{A, NTuple{N, B}}}, amplitudes_minibuffer, estimate_amplitudes_electrode_i!) where {A, N, B}
-    # We need a full input buffer to use as many samples for each estimate
-    # This protects against estimates based on e.g. 2 samples, i.e. garbage.
-    # while !isfull(voltages_buffer)
-    #     push!(voltages_buffer, take!(voltages_channel))
-    # end
-
-    # Put any available samples into input buffer, so that 
-    # they are included in next processing loop
-    while !isempty(voltages_channel)
-        push!(voltages_buffer, take!(voltages_channel))
-    end
-
-    # Spawn tasks that process each electrode in parallel
-    @sync for i in eachindex(amplitudes_minibuffer)
-        Threads.@spawn estimate_amplitudes_electrode_i!(amplitudes_minibuffer, voltages_buffer, i)
-    end
-    calculated_POCs = collect_tuple(
-        calculate_POC(getindex.(amplitudes_minibuffer, i)...) for i in 1:N
-    )
-    
-    put!(POCs_channel, time_ns()=>calculated_POCs)
-end
-export kernel_estimate_POCs!
-
-
-function kernel_store_POCs_in_buffer!(POCs_channel::Channel, POCs_buffer::CircularBuffer)
-    while !isempty(POCs_channel)
-        push!(POCs_buffer, take!(POCs_channel))
-    end
-end
-export kernel_store_POCs_in_buffer!
-
 using PythonCall
 
-"""
-	setup_mcc128(fs, daqhats, daqhats_utils)
-	
-Example usage:
-begin
-	setup_parameters = setup_mcc128()
-	
-	task_producer = Threads.@spawn begin
-		try
-			while keep_running[]
-				kernel_get_raw_data(voltages_buffer, setup_parameters)
-			end
-		catch e
-			@info "Encountered error in data collection. Rethrowing error"
-			rethrow()
-		finally
-			teardown_mcc128(setup_parameters)
-		end
-	end
-end
-"""
-function setup_mcc128(fs, daqhats, daqhats_utils)
-    fs = 25_000
-    channels = [2,3]
-    channel_mask = daqhats_utils.chan_list_to_mask(channels)
-    num_channels = length(channels)
-    channels2 = [0,1]
-    channel_mask2 = daqhats_utils.chan_list_to_mask(channels2)
-   
-   
+#=
+from __future__ import print_function
+from sys import stdout
+from scipy import signal
+from time import sleep
+from daqhats import mcc128, mcc152, OptionFlags, HatIDs, HatError, AnalogInputMode, \
+    AnalogInputRange
+from daqhats_utils import select_hat_device, enum_mask_to_string, \
+    chan_list_to_mask, input_mode_to_string, input_range_to_string
+import matplotlib.pyplot as plt
+import numpy as np
+import datetime;
+import zmq
+=#
+daqhats_utils = pyimport("daqhats_utils")
+channels = [2,3]
+channel_mask = daqhats_utils.chan_list_to_mask(channels)
+channels2 = [0,1]
+channel_mask2 = daqhats_utils.chan_list_to_mask(channels2)
+#num_channels = length(channels)
+
+
+    input_mode = AnalogInputMode.DIFF
+    input_range = AnalogInputRange.BIP_10V
+
     samples_per_channel = 1024
+
+    options = OptionFlags.CONTINUOUS
+
+    scan_rate = 50000
+
+    # Select an MCC 128 HAT device to use.
+    hat = mcc128(7)
+    hat2 = mcc128(2)
    
-    hat = daqhats.mcc128(7)
-    hat2 = daqhats.mcc128(2)
-   
-    input_mode = daqhats.AnalogInputMode.DIFF
-    input_range = daqhats.AnalogInputRange.BIP_10V
-    
+    # Set both hats to the specified input mode and input range
     hat.a_in_mode_write(input_mode)
     hat.a_in_range_write(input_range)
-   
+
     hat2.a_in_mode_write(input_mode)
     hat2.a_in_range_write(input_range)
+
+    actual_scan_rate = hat.a_in_scan_actual_rate(num_channels, scan_rate)
+    actual_scan_rate2 = hat2.a_in_scan_actual_rate(num_channels, scan_rate)
+
     
-    scan_rate = fs
-    read_request_size = 2096*2
+
+
+        # Configure and start the scan.
+        # Since the continuous option is being used, the samples_per_channel
+        # parameter is ignored if the value is less than the default internal
+        # buffer size (10000 * num_channels in this case). If a larger internal
+        # buffer size is desired, set the value of this parameter accordingly.
+
+        # Return the data    
+    try:
+            hat.a_in_scan_start(channel_mask, samples_per_channel, scan_rate,
+                            options)
+            hat2.a_in_scan_start(channel_mask2, samples_per_channel, scan_rate,
+                            options)
+                            
+            read_and_display_data(channel_mask, channel_mask2, samples_per_channel, scan_rate,
+                            options, hat,hat2,num_channels)
+
+    except KeyboardInterrupt:
+            # Clear the '^C' from the display.
+            print(CURSOR_BACK_2, ERASE_TO_END_OF_LINE, '\n')
+            print('Stopping')
+            hat.a_in_scan_stop()
+            hat.a_in_scan_cleanup()       
+            hat2.a_in_scan_stop()
+            hat2.a_in_scan_cleanup() 
+
+
+
+
+def read_and_display_data(channel_mask, channel_mask2, samples_per_channel, scan_rate,
+                            options, hat,hat2,num_channels):
+    """
+    Reads data from the specified channels on the specified DAQ HAT devices
+    and updates the data on the terminal display.  The reads are executed in a
+    loop that continues until the user stops the scan or an overrun error is
+    detected.
+
+    Args:
+        hat (mcc128): The mcc128 HAT device object.
+        num_channels (int): The number of channels to display.
+
+    Returns:
+        None
+
+    """
+
+    total_samples_read = 0
+    read_request_size = 2096
+
     # When doing a continuous scan, the timeout value will be ignored in the
     # call to a_in_scan_read because we will be requesting that all available
     # samples (up to the default buffer size) be returned.
     timeout = 5.0
-	
     actual_scan_rate = hat.a_in_scan_actual_rate(num_channels, scan_rate)
+
     actual_scan_rate2 = hat2.a_in_scan_actual_rate(num_channels, scan_rate)
 
-	options = daqhats.OptionFlags.CONTINUOUS
+    fstep = actual_scan_rate/read_request_size
+    f = np.linspace(0, (read_request_size-1)*fstep,read_request_size)
 
-	# Because we start the scan here, every 
-	# `setup_mcc128` has to be matched by a 
-	# `teardown_mcc128` to snap out of the scan
-	hat.a_in_scan_start(channel_mask, samples_per_channel, scan_rate, options)
-	hat2.a_in_scan_start(channel_mask2, samples_per_channel, scan_rate, options)
-	
-	setup_parameters = (;daqhats, daqhats_utils, hat, hat2, read_request_size, timeout, options, num_channels)
-	return setup_parameters
-end
-export setup_mcc128
 
-function teardown_mcc128(setup_parameters)
-	setup_parameters.hat.a_in_scan_stop()
-    setup_parameters.hat.a_in_scan_cleanup()       
-    setup_parameters.hat2.a_in_scan_stop()
-    setup_parameters.hat2.a_in_scan_cleanup() 
-end
-export teardown_mcc128
+    while True:
+        
+        read_result = hat.a_in_scan_read(read_request_size, timeout)
+        read_result2 = hat2.a_in_scan_read(read_request_size, timeout)
 
-"""
-    kernel_get_raw_data!(voltages_channel, setup_parameters)
-    
-Docstring goes here
-"""
-function kernel_get_raw_data!(voltages_channel, setup_parameters)
-	p = setup_parameters  # shorter name for internal use
-	
-	read_result = p.hat.a_in_scan_read(p.read_request_size, setup_parameters.timeout)
-	read_result2 = p.hat2.a_in_scan_read(p.read_request_size, setup_parameters.timeout)
-	
-	samples_read_per_channel = length(read_result.data) / p.num_channels |> round |> Int
-
-	#sanity-check. This should be removed if the warning is never printed.
-	samples_read_per_channel2 = length(read_result2.data) / p.num_channels |> round |> Int
-	if samples_read_per_channel != samples_read_per_channel2
-	    @warn "A different number of samples was read for channel1 and channel2"
-	end
-
-	if samples_read_per_channel > 0
-	    for i in 0:samples_read_per_channel-1
-	        # We collect a sample from each electrode into a `sample_set`
-	        sample_set_python = (read_result.data[i], read_result.data[i+1], read_result2.data[i], read_result2.data[i+1])
-	        
-	        # We convert the data from python datatypes to julia datatypes
-	        sample_set_julia = Base.Fix1(pyconvert, Float32).(sample_set_python)
-	        
-	        # We put individual sample-sets into `data_channel`, 
-	        # for consuption by another thread/task
-	        
-	        put!(voltages_channel, sample_set_julia)
-	    end
-	end
-end
-export kernel_get_raw_data!
-
-function bla(fs, daqhats, daqhats_utils, voltages_channel)
-	setup_parameters = setup_mcc128(fs, daqhats, daqhats_utils)
-	try
-        kernel_get_raw_data!(voltages_channel, setup_parameters)
-    finally
-		teardown_mcc128(setup_parameters)
-    end
-    return nothing
-end
-export bla
-# Original Python Script:
 
 #=
+Python code:
+
 #!/usr/bin/env python
 #  -*- coding: utf-8 -*-
 
@@ -276,15 +204,13 @@ def main():
 
     scan_rate = 50000
 
-        # Select an MCC 128 HAT device to use.
-    #address = select_hat_device(HatIDs.MCC_128)
+    # Select an MCC 128 HAT device to use.
     hat = mcc128(7)
     hat2 = mcc128(2)
-   # print(adress)
+   
+    # Set both hats to the specified input mode and input range
     hat.a_in_mode_write(input_mode)
     hat.a_in_range_write(input_range)
-
-
 
     hat2.a_in_mode_write(input_mode)
     hat2.a_in_range_write(input_range)
@@ -301,7 +227,7 @@ def main():
         # buffer size (10000 * num_channels in this case). If a larger internal
         # buffer size is desired, set the value of this parameter accordingly.
 
-        # Display the header row for the data table.    
+        # Return the data    
     try:
             hat.a_in_scan_start(channel_mask, samples_per_channel, scan_rate,
                             options)
@@ -383,4 +309,6 @@ def read_and_display_data(channel_mask, channel_mask2, samples_per_channel, scan
 
 if __name__ == '__main__':
     main()
+
+
 =#

@@ -40,6 +40,14 @@ into
 collect_tuple(gen::Base.Generator) = tuple(gen...)
 export collect_tuple
 
+import Base.empty!
+function Base.empty!(c)
+    while isready(c)
+        take!(c)
+    end
+    return nothing
+end
+
 function launch_pluto()
 	try 
 		@eval using Pluto
