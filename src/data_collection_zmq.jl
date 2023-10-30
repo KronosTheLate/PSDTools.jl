@@ -31,7 +31,13 @@ reciever_buffers_encoded = (
 
 voltage_encoded_type = ComplexF32
 voltage_decoded_type = Float32
+
+"""
+    decode(data, T_i=voltage_encoded_type, T_f=voltage_decoded_type)
+"""
 decode(data, T_i=voltage_encoded_type, T_f=voltage_decoded_type) = T_f.(reinterpret(T_i, data))
+export decode
+
 reciever_buffers_decoded = (
     zeros(voltage_decoded_type, read_request_size),
     zeros(voltage_decoded_type, read_request_size),
