@@ -4,6 +4,7 @@ include("amplitude_extraction.jl")
 # include("read_data_mcc.jl")
 include("utils.jl")
 include("kernels.jl")
+include("data_collection_zmq.jl")
 
 
 # Notes about implementation details:

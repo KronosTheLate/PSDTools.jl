@@ -41,11 +41,31 @@ collect_tuple(gen::Base.Generator) = tuple(gen...)
 export collect_tuple
 
 import Base.empty!
-function Base.empty!(c)
+"""
+    empty!(c)
+
+Empty a Channel `c`. Returns the number of elements removed.
+"""
+function Base.empty!(c::Channel)
+    counter = 0
     while isready(c)
         take!(c)
+        counter += 1
     end
-    return nothing
+    return counter
+end
+
+toggle!(t::Union{Ref{Bool}, Threads.Atomic{Bool}}, final_state=!t[]) = (t[] = final_state)
+export toggle!
+
+function define_lamps()
+    lamp1 =   (f=7.5e3,   As=(1, 8, 3, 4))
+    lamp1_2 = (f=15e3,    As=(1, 8, 3, 4) .* 10^-2.5)
+    lamp2 =   (f=10.25e3, As=(4, 3, 8, 1) .* 10^-0.5)
+    lamp2_2 = (f=20.5e3,  As=(4, 3, 8, 1) .* 10^-3.5)
+    lamp_dc = (f=0     ,  As=(1, 1, 1, 1) .* 10^1)
+    lamps = (lamp1, lamp1_2, lamp2, lamp2_2, lamp_dc)
+    return lamps
 end
 
 function launch_pluto()
