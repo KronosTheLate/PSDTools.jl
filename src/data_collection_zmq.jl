@@ -22,27 +22,15 @@ end
 export activate_sockets!
 
 read_request_size = 2096
-reciever_buffers_encoded = (
-    zeros(UInt8, read_request_size*8),
-    zeros(UInt8, read_request_size*8),
-    zeros(UInt8, read_request_size*8),
-    zeros(UInt8, read_request_size*8)
-)
 
-voltage_encoded_type = ComplexF32
-voltage_decoded_type = Float32
+T_voltages_sent = ComplexF32
+T_voltages_target = Float32
 
-"""
-    decode(data, T_i=voltage_encoded_type, T_f=voltage_decoded_type)
-"""
-decode(data, T_i=voltage_encoded_type, T_f=voltage_decoded_type) = T_f.(reinterpret(T_i, data))
-export decode
-
-reciever_buffers_decoded = (
-    zeros(voltage_decoded_type, read_request_size),
-    zeros(voltage_decoded_type, read_request_size),
-    zeros(voltage_decoded_type, read_request_size),
-    zeros(voltage_decoded_type, read_request_size)
+reciever_buffers = (
+    zeros(T_voltages_target, read_request_size),
+    zeros(T_voltages_target, read_request_size),
+    zeros(T_voltages_target, read_request_size),
+    zeros(T_voltages_target, read_request_size)
 )
 
 """
@@ -53,33 +41,25 @@ reciever_buffers_decoded = (
 - `reciever_buffers_decoded`
 """
 function kernel_read_data!(voltages_channel, sockets, 
-    reciever_buffers_encoded=reciever_buffers_encoded, 
-    reciever_buffers_decoded=reciever_buffers_decoded
+    reciever_buffers=reciever_buffers
 )
     # Hoping and praying that we are reading from each socket 
     # at the same time, and able to capture all incoming data.
     @sync begin
-        Threads.@spawn reciever_buffers_encoded[1] .= recv(sockets[1])
-        Threads.@spawn reciever_buffers_encoded[2] .= recv(sockets[2])
-        Threads.@spawn reciever_buffers_encoded[3] .= recv(sockets[3])
-        Threads.@spawn reciever_buffers_encoded[4] .= recv(sockets[4])
-    end
-    
-    @sync begin
-        Threads.@spawn reciever_buffers_decoded[1] .= decode(reciever_buffers_encoded[1])
-        Threads.@spawn reciever_buffers_decoded[2] .= decode(reciever_buffers_encoded[2])
-        Threads.@spawn reciever_buffers_decoded[3] .= decode(reciever_buffers_encoded[3])
-        Threads.@spawn reciever_buffers_decoded[4] .= decode(reciever_buffers_encoded[4])
+        Threads.@spawn reciever_buffers[1] .= recv(sockets[1], Vector{T_voltages_sent})
+        Threads.@spawn reciever_buffers[2] .= recv(sockets[2], Vector{T_voltages_sent})
+        Threads.@spawn reciever_buffers[3] .= recv(sockets[3], Vector{T_voltages_sent})
+        Threads.@spawn reciever_buffers[4] .= recv(sockets[4], Vector{T_voltages_sent})
     end
 
     for i in 1:read_request_size
-        meas_set = (
-            reciever_buffers_decoded[1][i], 
-            reciever_buffers_decoded[2][i], 
-            reciever_buffers_decoded[3][i], 
-            reciever_buffers_decoded[4][i]
+        measurement_set = (
+            reciever_buffers[1][i], 
+            reciever_buffers[2][i], 
+            reciever_buffers[3][i], 
+            reciever_buffers[4][i]
         )
-        put!(voltages_channel, meas_set)
+        put!(voltages_channel, measurement_set)
     end
 end
 export kernel_read_data!
