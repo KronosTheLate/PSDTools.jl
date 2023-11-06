@@ -4,7 +4,7 @@
 Given input voltages `v_x1, v_x2, v_y1, v_y2` and 
 electrical center `L_x` and `L_y`, calculate the Position On Chip.
 """
-function calculate_POC(v_x1, v_x2, v_y1, v_y2, L_x=1, L_y=1)
+function calculate_POC(v_x1, v_x2, v_y1, v_y2, L_x=6.82, L_y=6.82)
 	# from datasheet
 	v_sum = v_x1+v_x2+v_y1+v_y2
 	x = (v_x2+v_y1 - (v_x1+v_y2))/v_sum * L_x/2
