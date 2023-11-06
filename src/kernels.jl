@@ -27,10 +27,11 @@ let k=0  # Essentially allows `k` to be an internal state in the function
 end
 export kernel_get_raw_data_dummy!
 
+
 """
-    kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel::Channel, amplitudes_minibuffer, estimate_amplitudes_electrode_i!)
+kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel::Channel, amplitudes_minibuffer, estimate_amplitudes_electrode_i!)
 """
-function kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel::Channel{Pair{A, NTuple{N, B}}}, amplitudes_minibuffer, estimate_amplitudes_electrode_i!; timefunc) where {A, N, B}
+function kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel, amplitudes_minibuffer, freqs_probe, amplitude_estimator = dft_probe; timefunc, fs)
     # We need a full input buffer to use as many samples for each estimate
     # This protects against estimates based on e.g. 2 samples, i.e. garbage.
     # while !isfull(voltages_buffer)
@@ -44,12 +45,13 @@ function kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::Circu
     end
 
     # Spawn tasks that process each electrode in parallel
-    @sync for i in eachindex(amplitudes_minibuffer)
-        Threads.@spawn estimate_amplitudes_electrode_i!(amplitudes_minibuffer, voltages_buffer, i)
+    Threads.@threads for i in 1:4
+        sig_i = getindex.(voltages_buffer, i)
+        result_from_channel_i = collect_tuple(amplitude_estimator(sig_i, f_probe, fs) for f_probe in freqs_probe)
+        amplitudes_minibuffer[i] = result_from_channel_i
     end
-    calculated_POCs = collect_tuple(
-        calculate_POC(getindex.(amplitudes_minibuffer, i)...) for i in 1:N
-    )
+
+    calculated_POCs = collect_tuple(calculate_POC(getindex.(amplitudes_minibuffer, i)...) for i in eachindex(freqs_probe))
     
     put!(POCs_channel, timefunc()=>calculated_POCs)
 end

@@ -54,8 +54,8 @@ function kernel_read_data!(voltages_channel, sockets,
 
     for i in 1:read_request_size
         measurement_set = (
-            reciever_buffers[1][i], 
             reciever_buffers[2][i], 
+            reciever_buffers[1][i], 
             reciever_buffers[3][i], 
             reciever_buffers[4][i]
         )
