@@ -72,7 +72,8 @@ export dft_probe_old
 # DFT: sum(signal(n+1)*cis(-2π*k*n/N) for n in eachindex(signal))
 function dft_probe(sig, f_probe, fs)
 	N_osc_of_f_probe_per_sample_period = f_probe/fs
-	return abs(sum(sig[n]*cis(-2π*N_osc_of_f_probe_per_sample_period*n) for n in eachindex(sig))/length(sig)*2)
+	the_sum = sum(sig[n]*cispi(-2*N_osc_of_f_probe_per_sample_period*(n-1)) for n in eachindex(sig))
+	return abs(the_sum/length(sig)*2)
 end
 export dft_probe
 
@@ -92,11 +93,12 @@ export OnlineDFTProbe
 
 
 function OnlineDFTProbe(fs::Int, f_probe::Int, N::Int, T=ComplexF32)
+
 	N_osc_of_f_probe_per_fs_period = f_probe//fs
 	N_osc_of_fs_per_f_probe_period = inv(N_osc_of_f_probe_per_fs_period)
 	dft_exponentials_periodicity_in_samples = N_osc_of_fs_per_f_probe_period.num * N_osc_of_fs_per_f_probe_period.den
 	
-	dft_exps = T[cispi(2*i/dft_exponentials_periodicity_in_samples) for i in 1:dft_exponentials_periodicity_in_samples]
+	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:dft_exponentials_periodicity_in_samples-1]
 
 	dft_exps_ind = 1
 	terms_in_sum_buffer = CircularBuffer{T}(N)
