@@ -1,3 +1,5 @@
+using DataStructures
+using Base.Iterators
 using EasyFFTs
 using DSP
 
@@ -57,7 +59,7 @@ export make_estimator_filter_and_RMS_corrected
 # We are now free of that constraint!
 
 # DFT: sum(signal(n+1)*cis(-2π*k*n/N) for n in eachindex(signal))
-function dft_probe(sig, f_probe, fs)
+function dft_probe_old(sig, f_probe, fs)
 	N = length(sig)
 	signal_duration = 1/fs * length(sig)
 	T_probe = 1/f_probe
@@ -65,4 +67,65 @@ function dft_probe(sig, f_probe, fs)
 	k = n_oscillations
 	return abs(sum(sig[n]*cis(-2π*k*(n-1)/N) for n in eachindex(sig))/N*2)
 end
+export dft_probe_old
+
+# DFT: sum(signal(n+1)*cis(-2π*k*n/N) for n in eachindex(signal))
+function dft_probe(sig, f_probe, fs)
+	N_osc_of_f_probe_per_sample_period = f_probe/fs
+	return abs(sum(sig[n]*cis(-2π*N_osc_of_f_probe_per_sample_period*n) for n in eachindex(sig))/length(sig)*2)
+end
 export dft_probe
+
+# Requires new samples as input
+mutable struct OnlineDFTProbe{T}
+	fs::Int
+	f_probe::Int
+	N::Int  		# Used for getting amplitude
+	#signal_duration # computed from fs and N
+	#n_oscillations
+	dft_exps::Vector{T}
+	dft_exps_ind::Int
+	terms_in_sum_buffer::CircularBuffer{T}  # constructed from N
+	sum_of_terms::T
+end
+export OnlineDFTProbe
+
+
+function OnlineDFTProbe(fs::Int, f_probe::Int, N::Int, T=ComplexF32)
+	N_osc_of_f_probe_per_fs_period = f_probe//fs
+	N_osc_of_fs_per_f_probe_period = inv(N_osc_of_f_probe_per_fs_period)
+	dft_exponentials_periodicity_in_samples = N_osc_of_fs_per_f_probe_period.num * N_osc_of_fs_per_f_probe_period.den
+	
+	dft_exps = T[cispi(2*i/dft_exponentials_periodicity_in_samples) for i in 1:dft_exponentials_periodicity_in_samples]
+
+	dft_exps_ind = 1
+	terms_in_sum_buffer = CircularBuffer{T}(N)
+	sum_of_terms = zero(T)
+	#return typeof(sum_of_terms)
+	return OnlineDFTProbe{T}(fs, f_probe, N, dft_exps, dft_exps_ind, terms_in_sum_buffer, sum_of_terms)
+end
+
+import Base.push!
+function push!(ofp::OnlineDFTProbe, datapoint::Number)
+	if isfull(ofp.terms_in_sum_buffer)
+		ofp.sum_of_terms -= first(ofp.terms_in_sum_buffer)
+	end
+	new_term = datapoint * ofp.dft_exps[ofp.dft_exps_ind]
+	
+	# Perhaps length(ofp.dft_exps) should be stored in field in struct
+	ofp.dft_exps_ind = ofp.dft_exps_ind % length(ofp.dft_exps) + 1
+
+	push!(ofp.terms_in_sum_buffer, new_term)
+	ofp.sum_of_terms += new_term
+	return nothing
+end
+
+function push!(ofp::OnlineDFTProbe, datapoints::AbstractVector)
+	for datapoint in datapoints
+		push!(ofp, datapoint)
+	end
+end
+
+
+amplitude(ofp::OnlineDFTProbe) = abs(ofp.sum_of_terms[]) / ofp.N * 2
+export amplitude
