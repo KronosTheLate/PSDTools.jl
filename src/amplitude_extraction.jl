@@ -3,6 +3,8 @@ using Base.Iterators
 using EasyFFTs
 using DSP
 
+import Base.push!
+export amplitude
 #rms(x) = √(sum(x->x^2, x)/length(x))
 #export rms
 
@@ -77,6 +79,36 @@ function dft_probe(sig, f_probe, fs)
 end
 export dft_probe
 
+# We need this version of DFTProbe to fulfill the API that will be 
+# required by the new OnlineDFTProbe
+mutable struct DFTProbe{T}
+	fs::Int
+	f_probe::Int
+	N::Int
+	dft_exps::Vector{T}
+	datapoints::CircularBuffer{T}
+end
+export DFTProbe
+
+function DFTProbe(fs, f_probe, N, T=ComplexF32)
+	N_osc_of_f_probe_per_fs_period = f_probe//fs
+	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:N-1]
+	datapoints = CircularBuffer{T}(N)
+
+	# Initialize to zeros. Means first few measurements are trash
+	# but it means we do not have to deal with edge-case of semi-full buffer
+	# Edge-case needs handling in hot-loop --> performance hit
+	foreach(_->push!(datapoints, zero(T)), 1:N)
+	return DFTProbe{T}(fs, f_probe, N, dft_exps, datapoints)
+end
+
+push!(fp::DFTProbe, datapoint) = push!(fp.datapoints, datapoint)
+push!(fp::DFTProbe, datapoints::AbstractVector) = foreach(datapoints) do datapoint
+	push!(fp.datapoints, datapoint)
+end
+
+amplitude(fp::DFTProbe) = abs(sum(fp.datapoints[i] * fp.dft_exps[i] for i in 1:fp.N)) / fp.N * 2
+
 # Requires new samples as input
 mutable struct OnlineDFTProbe{T}
 	fs::Int
@@ -91,6 +123,10 @@ mutable struct OnlineDFTProbe{T}
 end
 export OnlineDFTProbe
 
+import Base.show
+function show(io::IO, ofp::OnlineDFTProbe)
+	print(io, string("Online DFT probe. fs = ", ofp.fs, ", f_probe = ", ofp.f_probe, " blocklength = ", ofp.N))
+end
 
 function OnlineDFTProbe(fs::Int, f_probe::Int, N::Int, T=ComplexF32)
 
@@ -102,16 +138,20 @@ function OnlineDFTProbe(fs::Int, f_probe::Int, N::Int, T=ComplexF32)
 
 	dft_exps_ind = 1
 	terms_in_sum_buffer = CircularBuffer{T}(N)
+
+	# Initialize to zeros. Means first few measurements are trash
+	# but it means we do not have to deal with edge-case of semi-full buffer
+	# Edge-case needs handling in hot-loop --> performance hit
+	foreach(_->push!(terms_in_sum_buffer, zero(T)), 1:N)
+
 	sum_of_terms = zero(T)
 	#return typeof(sum_of_terms)
 	return OnlineDFTProbe{T}(fs, f_probe, N, dft_exps, dft_exps_ind, terms_in_sum_buffer, sum_of_terms)
 end
 
-import Base.push!
 function push!(ofp::OnlineDFTProbe, datapoint::Number)
-	if isfull(ofp.terms_in_sum_buffer)
-		ofp.sum_of_terms -= first(ofp.terms_in_sum_buffer)
-	end
+	ofp.sum_of_terms -= first(ofp.terms_in_sum_buffer)
+	
 	new_term = datapoint * ofp.dft_exps[ofp.dft_exps_ind]
 	
 	# Perhaps length(ofp.dft_exps) should be stored in field in struct
@@ -129,5 +169,4 @@ function push!(ofp::OnlineDFTProbe, datapoints::AbstractVector)
 end
 
 
-amplitude(ofp::OnlineDFTProbe) = abs(ofp.sum_of_terms[]) / ofp.N * 2
-export amplitude
+amplitude(ofp::OnlineDFTProbe) = abs(ofp.sum_of_terms) / ofp.N * 2

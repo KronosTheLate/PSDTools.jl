@@ -2,9 +2,9 @@ using DataStructures
 using Dates
 
 """
-kernel_estimate_POCs!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel::Channel, amplitudes_minibuffer, estimate_amplitudes_electrode_i!)
+kernel_estimate_POCs_new!(voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel::Channel, amplitudes_minibuffer, estimate_amplitudes_electrode_i!)
 """
-function kernel_estimate_POCs_new!(timestamps_channel::Channel, voltages_channel::Channel, voltages_buffer::CircularBuffer, POCs_channel, amplitudes_minibuffer, freqs_probe, amplitude_estimator = dft_probe; fs)
+function kernel_estimate_POCs_new!(timestamps_channel::Channel, voltages_channel::Channel, amplitude_estimators, POCs_channel, amplitudes_minibuffer, fs)
     # We need a full input buffer to use as many samples for each estimate
     # This protects against estimates based on e.g. 2 samples, i.e. garbage.
     # while !isfull(voltages_buffer)
@@ -21,14 +21,20 @@ function kernel_estimate_POCs_new!(timestamps_channel::Channel, voltages_channel
     end
     timestamp = take!(timestamps_channel) + n_new_samples*sample_period
 
+    
+    #for i_probe in eachindex(freqs_probe)
     # Spawn tasks that process each electrode in parallel
     Threads.@threads for i in 1:4
-        sig_i = getindex.(voltages_buffer, i)
-        result_from_channel_i = collect_tuple(amplitude_estimator(sig_i, f_probe, fs) for f_probe in freqs_probe)
+        new_samples_i = getindex.(voltages_buffer, i)
+        foreach(eachindex(freqs_probe)) do i_probe
+            push!(amplitude_estimators[i_probe][i], new_samples_i)
+        end
+        result_from_channel_i = collect_tuple(amplitude(amplitude_estimators[i_probe][i]) for i_probe in eachindex(freqs_probe))
         amplitudes_minibuffer[i] = result_from_channel_i
     end
+    #end
 
-    calculated_POCs = collect_tuple(calculate_POC(getindex.(amplitudes_minibuffer, i)...) for i in eachindex(freqs_probe))
+    calculated_POCs = collect_tuple(calculate_POC(getindex.(amplitudes_minibuffer, i_probe)...) for i_probe in eachindex(freqs_probe))
     
     put!(POCs_channel, timestamp=>calculated_POCs)
     if isempty(timestamps_channel)
