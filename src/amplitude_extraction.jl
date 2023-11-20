@@ -62,12 +62,12 @@ export make_estimator_filter_and_RMS_corrected
 
 # DFT: sum(signal(n+1)*cis(-2π*k*n/N) for n in eachindex(signal))
 function dft_probe_old(sig, f_probe, fs)
-	N = length(sig)
+	blocksize = length(sig)
 	signal_duration = 1/fs * length(sig)
 	T_probe = 1/f_probe
 	n_oscillations = signal_duration/T_probe
 	k = n_oscillations
-	return abs(sum(sig[n]*cis(-2π*k*(n-1)/N) for n in eachindex(sig))/N*2)
+	return abs(sum(sig[n]*cis(-2π*k*(n-1)/blocksize) for n in eachindex(sig))/N*2)
 end
 export dft_probe_old
 
@@ -84,22 +84,22 @@ export dft_probe
 mutable struct DFTProbe{T}
 	fs::Int
 	f_probe::Int
-	N::Int
+	blocksize::Int
 	dft_exps::Vector{T}
 	datapoints::CircularBuffer{T}
 end
 export DFTProbe
 
-function DFTProbe(fs, f_probe, N, T=ComplexF32)
+function DFTProbe(fs, f_probe, blocksize, T=ComplexF32)
 	N_osc_of_f_probe_per_fs_period = f_probe//fs
-	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:N-1]
-	datapoints = CircularBuffer{T}(N)
+	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:blocksize-1]
+	datapoints = CircularBuffer{T}(blocksize)
 
 	# Initialize to zeros. Means first few measurements are trash
 	# but it means we do not have to deal with edge-case of semi-full buffer
 	# Edge-case needs handling in hot-loop --> performance hit
-	foreach(_->push!(datapoints, zero(T)), 1:N)
-	return DFTProbe{T}(fs, f_probe, N, dft_exps, datapoints)
+	foreach(_->push!(datapoints, zero(T)), 1:blocksize)
+	return DFTProbe{T}(fs, f_probe, blocksize, dft_exps, datapoints)
 end
 
 push!(fp::DFTProbe, datapoint) = push!(fp.datapoints, datapoint)
@@ -107,28 +107,28 @@ push!(fp::DFTProbe, datapoints::AbstractVector) = foreach(datapoints) do datapoi
 	push!(fp.datapoints, datapoint)
 end
 
-amplitude(fp::DFTProbe) = abs(sum(fp.datapoints[i] * fp.dft_exps[i] for i in 1:fp.N)) / fp.N * 2
+amplitude(fp::DFTProbe) = abs(sum(fp.datapoints[i] * fp.dft_exps[i] for i in 1:fp.blocksize)) / fp.blocksize * 2
 
 # Requires new samples as input
 mutable struct OnlineDFTProbe{T}
 	fs::Int
 	f_probe::Int
-	N::Int  		# Used for getting amplitude
-	#signal_duration # computed from fs and N
+	blocksize::Int  		# Used for getting amplitude
+	#signal_duration # computed from fs and blocksize
 	#n_oscillations
 	dft_exps::Vector{T}
 	dft_exps_ind::Int
-	terms_in_sum_buffer::CircularBuffer{T}  # constructed from N
+	terms_in_sum_buffer::CircularBuffer{T}  # constructed from blocksize
 	sum_of_terms::T
 end
 export OnlineDFTProbe
 
 import Base.show
 function show(io::IO, ofp::OnlineDFTProbe)
-	print(io, string("Online DFT probe. fs = ", ofp.fs, ", f_probe = ", ofp.f_probe, " blocklength = ", ofp.N))
+	print(io, string("Online DFT probe. fs = ", ofp.fs, ", f_probe = ", ofp.f_probe, " blocklength = ", ofp.blocksize))
 end
 
-function OnlineDFTProbe(fs::Int, f_probe::Int, N::Int, T=ComplexF32)
+function OnlineDFTProbe(fs::Int, f_probe::Int, blocksize::Int, T=ComplexF32)
 
 	N_osc_of_f_probe_per_fs_period = f_probe//fs
 	N_osc_of_fs_per_f_probe_period = inv(N_osc_of_f_probe_per_fs_period)
@@ -137,16 +137,16 @@ function OnlineDFTProbe(fs::Int, f_probe::Int, N::Int, T=ComplexF32)
 	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:dft_exponentials_periodicity_in_samples-1]
 
 	dft_exps_ind = 1
-	terms_in_sum_buffer = CircularBuffer{T}(N)
+	terms_in_sum_buffer = CircularBuffer{T}(blocksize)
 
 	# Initialize to zeros. Means first few measurements are trash
 	# but it means we do not have to deal with edge-case of semi-full buffer
 	# Edge-case needs handling in hot-loop --> performance hit
-	foreach(_->push!(terms_in_sum_buffer, zero(T)), 1:N)
+	foreach(_->push!(terms_in_sum_buffer, zero(T)), 1:blocksize)
 
 	sum_of_terms = zero(T)
 	#return typeof(sum_of_terms)
-	return OnlineDFTProbe{T}(fs, f_probe, N, dft_exps, dft_exps_ind, terms_in_sum_buffer, sum_of_terms)
+	return OnlineDFTProbe{T}(fs, f_probe, blocksize, dft_exps, dft_exps_ind, terms_in_sum_buffer, sum_of_terms)
 end
 
 function push!(ofp::OnlineDFTProbe, datapoint::Number)
@@ -168,5 +168,82 @@ function push!(ofp::OnlineDFTProbe, datapoints::AbstractVector)
 	end
 end
 
+amplitude(ofp::OnlineDFTProbe) = abs(ofp.sum_of_terms) / ofp.blocksize * 2
 
-amplitude(ofp::OnlineDFTProbe) = abs(ofp.sum_of_terms) / ofp.N * 2
+## A version of OnlineDFTProbe that takes 4 voltages, looking for the same freq in all
+mutable struct OnlineDFTProbes{T}
+	fs::Int
+	f_probe::Int
+	blocksize::Int  		# Used for getting amplitude
+	#signal_duration # computed from fs and blocksize
+	#n_oscillations
+	dft_exps::Vector{T}
+	dft_exps_ind::Int
+	terms_in_sum_buffers::NTuple{4, CircularBuffer{T}}
+	sums_of_terms::NTuple{4, T}
+end
+export OnlineDFTProbes
+
+function show(io::IO, ofp::OnlineDFTProbes)
+	print(io, string("Set of 4 Online DFT probes. fs = ", ofp.fs, ", f_probe = ", ofp.f_probe, " blocklength = ", ofp.blocksize))
+end
+
+function OnlineDFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=ComplexF32)
+
+	N_osc_of_f_probe_per_fs_period = f_probe//fs
+	N_osc_of_fs_per_f_probe_period = inv(N_osc_of_f_probe_per_fs_period)
+	dft_exponentials_periodicity_in_samples = N_osc_of_fs_per_f_probe_period.num * N_osc_of_fs_per_f_probe_period.den
+	
+	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:dft_exponentials_periodicity_in_samples-1]
+
+	dft_exps_ind = 1
+	terms_in_sum_buffers = (
+		CircularBuffer{T}(blocksize),
+		CircularBuffer{T}(blocksize),
+		CircularBuffer{T}(blocksize),
+		CircularBuffer{T}(blocksize)
+	)
+
+	# Initialize to zeros. Means first few measurements are trash
+	# but it means we do not have to deal with edge-case of semi-full buffer
+	# Edge-case needs handling in hot-loop --> performance hit
+	for terms_in_sum_buffer in terms_in_sum_buffers
+		foreach(_->push!(terms_in_sum_buffer, zero(T)), 1:blocksize)
+	end
+
+	sums_of_terms = (zero(T), zero(T), zero(T), zero(T))
+	#return typeof(sum_of_terms)
+	return OnlineDFTProbes{T}(fs, f_probe, blocksize, dft_exps, dft_exps_ind, terms_in_sum_buffers, sums_of_terms)
+end
+
+function push!(ofp::OnlineDFTProbes, datapoints::NTuple{4, A}) where {A<:Number}
+	for i in 1:4
+		ofp.sums_of_terms[i] -= first(ofp.terms_in_sum_buffers[i])
+	end
+	
+	new_terms = datapoints .* ofp.dft_exps[ofp.dft_exps_ind]
+	
+	# Possible optimization: store length(ofp.dft_exps) in field in struct 
+	# to avoid quering it every time. Not that length(ofp.dft_exps) != blocksize!
+	ofp.dft_exps_ind = ofp.dft_exps_ind % length(ofp.dft_exps) + 1
+
+	push!.(ofp.terms_in_sum_buffers, new_terms)
+	ofp.sums_of_terms .+= new_terms
+	return nothing
+end
+
+function push!(ofp::OnlineDFTProbes, datapointss::AbstractVector)
+	for datapoints in datapointss
+		push!(ofp, datapoints)
+	end
+end
+
+function amplitudes(ofp::OnlineDFTProbes)
+	return (
+		abs(ofp.sums_of_terms[1]) / ofp.blocksize * 2,
+		abs(ofp.sums_of_terms[2]) / ofp.blocksize * 2,
+		abs(ofp.sums_of_terms[3]) / ofp.blocksize * 2,
+		abs(ofp.sums_of_terms[4]) / ofp.blocksize * 2
+	)
+end
+export amplitudes
