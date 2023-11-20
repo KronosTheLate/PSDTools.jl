@@ -95,7 +95,7 @@ function comm_pipeline(cmd::Cmd, stdout=stdout, stderr=stderr)
         # if !isempty(errors) || !success(proc)
             # @warn "Tunnel output" errors=Text(errors)
         # end
-    end
+    # end
     proc
 end
 export comm_pipeline
