@@ -80,8 +80,7 @@ end
 # and maybie to launch the python command from within the julia script
 function comm_pipeline(cmd::Cmd, stdout=stdout, stderr=stderr)
     # errbuf = IOBuffer()
-    proc = run(pipeline(cmd, stdout=stdout, stderr=stderr),
-               wait=false)
+    proc = Threads.@spawn run(cmd)
     # TODO: Kill this earlier if we need to reconnect in ensure_connected!()
     atexit() do
         kill(proc)
