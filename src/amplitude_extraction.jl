@@ -211,7 +211,7 @@ function OnlineDFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=ComplexF32)
 		foreach(_->push!(terms_in_sum_buffer, zero(T)), 1:blocksize)
 	end
 
-	sums_of_terms = (zero(T), zero(T), zero(T), zero(T))
+	sums_of_terms = [zero(T), zero(T), zero(T), zero(T)]
 	#return typeof(sum_of_terms)
 	return OnlineDFTProbes{T}(fs, f_probe, blocksize, dft_exps, dft_exps_ind, terms_in_sum_buffers, sums_of_terms)
 end
