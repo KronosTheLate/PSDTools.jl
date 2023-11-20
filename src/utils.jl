@@ -81,7 +81,8 @@ function comm_pipeline(cmd::Cmd)
     atexit() do
         kill(proc)
     end
-    @async begin
+    # Original code: @async begin
+	Threads.@spawn begin
         # Attempt to log any connection errors to the user
         wait(proc)
         errors = String(take!(errbuf))
