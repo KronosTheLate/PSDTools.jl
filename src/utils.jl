@@ -1,3 +1,5 @@
+using OpenSSH_jll
+
 """
     calculate_POC(v_x1, v_x2, v_y1, v_y2, L_x=1, L_y=1)
 
@@ -68,6 +70,51 @@ function define_lamps()
     return lamps
 end
 
+# >>>>>>>>>>>>>>>> Copied code from RemoteREPL.jl begin >>>>>>>>>>>> #
+# This function will be used to automatically forward a port via ssh, 
+# and maybie to launch the python command from within the julia script
+function comm_pipeline(cmd::Cmd)
+    errbuf = IOBuffer()
+    proc = run(pipeline(cmd, stdout=errbuf, stderr=errbuf),
+               wait=false)
+    # TODO: Kill this earlier if we need to reconnect in ensure_connected!()
+    atexit() do
+        kill(proc)
+    end
+    @async begin
+        # Attempt to log any connection errors to the user
+        wait(proc)
+        errors = String(take!(errbuf))
+        if !isempty(errors) || !success(proc)
+            @warn "Tunnel output" errors=Text(errors)
+        end
+    end
+    proc
+end
+export comm_pipeline
+
+"""
+	ssh_tunnel(host, port, tunnel_interface, tunnel_port; ssh_opts=``)
+
+The command run will be `ssh -L \$tunnel_interface:\$tunnel_port:localhost:\$port \$host`,
+with some extra stuff that is probably smart to have.
+"""
+function ssh_tunnel(host, port, tunnel_interface, tunnel_port; ssh_opts=``)
+    OpenSSH_jll.ssh() do ssh_exe
+        # Tunnel binds locally to $tunnel_interface:$tunnel_port
+        # The other end jumps through $host using the provided identity,
+        # and forwards the data to $port on *itself* (this is the localhost:$port
+        # part - "localhost" being resolved relative to $host)
+        ssh_cmd = `$ssh_exe $ssh_opts -o ExitOnForwardFailure=yes -o ServerAliveInterval=60
+                            -N -L $tunnel_interface:$tunnel_port:localhost:$port $host`
+        @debug "Connecting SSH tunnel to remote address $host via ssh tunnel to $port" ssh_cmd
+        comm_pipeline(ssh_cmd)
+    end
+end
+export ssh_tunnel
+# >>>>>>>>>>>>>>>> Copied code from RemoteREPL.jl end >>>>>>>>>>>> #
+
+#=
 function launch_pluto()
 	try 
 		@eval using Pluto
@@ -85,6 +132,7 @@ function launch_pluto()
 	)
 end
 export launch_pluto
+=#
 
 # A function `errormonitor` was introduced in Julia 1.7, 
 # which is very useful for working with tasks. The LongTimeSupport 
