@@ -15,6 +15,11 @@ function calculate_POC(v_x1, v_x2, v_y1, v_y2, L_x=6.82, L_y=6.82)
 end
 export calculate_POC
 
+function calculate_POC(amplitudes::NTuple{4, N}, L_x=6.82, L_y=6.82) where {N<:Number}
+	v_x1, v_x2, v_y1, v_y2 = amplitudes   # Destructure by iteration
+	return calculate_POC(v_x1, v_x2, v_y1, v_y2, L_x, L_y)
+end
+
 """
     calculate_POC_error(pos_est, pos_true)
 

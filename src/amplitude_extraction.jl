@@ -180,7 +180,7 @@ mutable struct OnlineDFTProbes{T}
 	dft_exps::Vector{T}
 	dft_exps_ind::Int
 	terms_in_sum_buffers::NTuple{4, CircularBuffer{T}}
-	sums_of_terms::NTuple{4, T}
+	sums_of_terms::AbstractVector{T}
 end
 export OnlineDFTProbes
 
