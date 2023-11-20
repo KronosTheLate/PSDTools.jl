@@ -78,22 +78,23 @@ end
 # >>>>>>>>>>>>>>>> Copied code from RemoteREPL.jl begin >>>>>>>>>>>> #
 # This function will be used to automatically forward a port via ssh, 
 # and maybie to launch the python command from within the julia script
-function comm_pipeline(cmd::Cmd)
-    errbuf = IOBuffer()
-    proc = run(pipeline(cmd, stdout=errbuf, stderr=errbuf),
+function comm_pipeline(cmd::Cmd, stdout=stdout, stderr=stderr)
+    # errbuf = IOBuffer()
+    proc = run(pipeline(cmd, stdout=stdout, stderr=stderr),
                wait=false)
     # TODO: Kill this earlier if we need to reconnect in ensure_connected!()
     atexit() do
         kill(proc)
     end
+	errormonitor(proc)
     # Original code: @async begin
-	Threads.@spawn begin
+	# Threads.@spawn begin
         # Attempt to log any connection errors to the user
-        wait(proc)
-        errors = String(take!(errbuf))
-        if !isempty(errors) || !success(proc)
-            @warn "Tunnel output" errors=Text(errors)
-        end
+        # wait(proc)
+        # errors = String(take!(errbuf))
+        # if !isempty(errors) || !success(proc)
+            # @warn "Tunnel output" errors=Text(errors)
+        # end
     end
     proc
 end
