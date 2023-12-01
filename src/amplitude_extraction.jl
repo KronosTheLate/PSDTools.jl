@@ -15,13 +15,27 @@ export time_function
 function make_filter_bandpass(f_center, filter_order, bandwidth; fs)
 	f_center > 0 || throw(ArgumentError("f_center is not greater than 0"))
 	f_center < fs/2 || throw(ArgumentError("f_center=$f_center is not smaller than the Nyquist frequency $(fs/2)"))
-    responsetype = Bandpass(
-		max(f_center-bandwidth/2, 1e-10), 
-		min(f_center+bandwidth/2, prevfloat(fs/2)); 
-		fs
-	)
+	min_freq = if f_center-bandwidth/2 > 0.0
+		f_center-bandwidth/2
+	else
+		@warn "f_center - bandwidth/2 is smaller than or equal to zero.
+		Setting the lower edge of passband to `nextfloat(0.0)`"
+		nextfloat(0.0)
+	end
+
+	max_freq = if f_center+bandwidth/2 < fs/2
+		f_center+bandwidth/2
+	else
+		@warn "f_center + bandwidth/2 is greater than or equal to fs/2.
+		Setting the upper edge of passband to `prevfloat(fs/2)`"
+		prevfloat(fs/2)
+	end
+
+    responsetype = Bandpass(min_freq, max_freq; fs)
+
     designmethod = Butterworth(filter_order)
-    filter = digitalfilter(responsetype, designmethod)
+    
+	filter = digitalfilter(responsetype, designmethod)
 	return filter
 end
 export make_filter_bandpass
@@ -56,6 +70,52 @@ function make_estimator_filter_and_RMS_corrected(signal, f_probe, filter_order, 
 end
 export make_estimator_filter_and_RMS_corrected
 
+
+##!====================================================================================!##
+##!====================================================================================!##
+##!====================================================================================!##
+
+struct Placeholder{T}
+	fs::Int
+	n_filter::Int
+	n_samples::Int
+	filter_coeffs_reversed::Vector{T}  # Reversed, as this is what is used in dot product. From convolution
+	buffers_unfiltered_samples::NTuple{4, CircularBuffer{T}}
+	buffers_filtered_samples::NTuple{4, CircularBuffer{T}}
+end
+
+function Placeholder(fs, n_filter, n_samples, f_center, f_bandwidth, T::Float32)
+	f = make_filter_bandpass(f_center, n_filter, f_bandwidth; fs)
+	buffers_unfiltered_samples = (
+		CircularBuffer{T}(n_filter),
+		CircularBuffer{T}(n_filter),
+		CircularBuffer{T}(n_filter),
+		CircularBuffer{T}(n_filter)
+	)
+	buffers_filtered_samples = (
+		CircularBuffer{T}(n_samples),
+		CircularBuffer{T}(n_samples),
+		CircularBuffer{T}(n_samples),
+		CircularBuffer{T}(n_samples)
+	)
+	filter_coeffs = nothing
+	return Placeholder{T}(fs, n_filter, f_samples, filter_coeffs, buffers_unfiltered_samples, buffers_filtered_samples)
+end
+
+function push!(x::Placeholder, datapoints::NTuple{4, <:Number})
+	push!.(x.buffers_unfiltered_samples, datapoints)
+	filtered_samples = collect_tuple(x.filter_coeffs_reversed ⋅ x.buffers_unfiltered_samples[i] for i in 1:4)
+	push!.(x.buffers_filtered_samples, filtered_samples)
+	return nothing
+end
+
+function amplitude(x::Placeholder)
+	# We intentionally do not divide by √2, as the position estiamtes are the same
+	return rms.(x.buffers_filtered_samples)
+end
+##!====================================================================================!##
+##!====================================================================================!##
+##!====================================================================================!##
 # k is the number of periods a signal of f=f_probe has 
 # inside the full signal duration
 # With the DFT, we restrict n_oscillations to an integer. 
