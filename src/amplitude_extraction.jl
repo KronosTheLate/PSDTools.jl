@@ -247,3 +247,92 @@ function amplitudes(ofp::OnlineDFTProbes)
 	)
 end
 export amplitudes
+
+
+##!=============================================================================================================!##
+##!==============================================               ================================================!##
+##!=============================================================================================================!##
+
+## A version of DFTProbe that takes 4 voltages, looking for the same freq in all
+mutable struct DFTProbes{T}
+	fs::Int
+	f_probe::Int
+	blocksize::Int  		# Used for getting amplitude
+	#signal_duration # computed from fs and blocksize
+	#n_oscillations
+	dft_exps::Vector{Complex{T}}
+	voltages_buffers::NTuple{4, CircularBuffer{T}}
+end
+export OnlineDFTProbes
+
+function show(io::IO, ofp::DFTProbes)
+	print(io, string("Set of 4 DFT probes. fs = ", ofp.fs, ", f_probe = ", ofp.f_probe, " blocklength = ", ofp.blocksize))
+end
+
+
+function DFTProbe(fs, f_probe, blocksize, T=ComplexF32)
+	N_osc_of_f_probe_per_fs_period = f_probe//fs
+	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:blocksize-1]
+	datapoints = CircularBuffer{T}(blocksize)
+
+	# Initialize to zeros. Means first few measurements are trash
+	# but it means we do not have to deal with edge-case of semi-full buffer
+	# Edge-case needs handling in hot-loop --> performance hit
+	foreach(_->push!(datapoints, zero(T)), 1:blocksize)
+	return DFTProbe{T}(fs, f_probe, blocksize, dft_exps, datapoints)
+end
+
+
+function OnlineDFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=Float32)
+
+	N_osc_of_f_probe_per_fs_period = f_probe//fs
+	
+	dft_exps = Complex{T}[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:blocksize-1]
+
+	voltages_buffers = (
+		CircularBuffer{Complex{T}}(blocksize),
+		CircularBuffer{Complex{T}}(blocksize),
+		CircularBuffer{Complex{T}}(blocksize),
+		CircularBuffer{Complex{T}}(blocksize)
+	)
+
+	# Initialize to zeros. Means first few measurements are trash
+	# but it means we do not have to deal with edge-case of semi-full buffer
+	# Edge-case needs handling in hot-loop --> performance hit
+	for voltages_buffer in voltages_buffers
+		foreach(_->push!(voltages_buffer, zero(Complex{T})), 1:blocksize)
+	end
+
+	return DFTProbes{T}(fs, f_probe, blocksize, dft_exps, voltages_buffers)
+end
+
+function push!(dftps::DFTProbes{T}, datapoints::NTuple{4, T}) where {T<:Number}
+	push!.(dftps.voltages_buffers, datapoints)
+	return nothing
+end
+
+function push!(dftps::DFTProbes, datapointss::AbstractVector)
+	for datapoints in datapointss
+		push!(dftps, datapoints)
+	end
+end
+
+function amplitudes(dftps::DFTProbes{T}) where {T<:Number}
+	a1 = zero(Complex{T})
+	a2 = zero(Complex{T})
+	a3 = zero(Complex{T})
+	a4 = zero(Complex{T})
+	
+	for i in eachindex(dftps.dft_exps)
+		a1 = fma(dftpf.voltages_buffers[1][i], dftpf.dft_exps[i], a1)
+		a2 = fma(dftpf.voltages_buffers[2][i], dftpf.dft_exps[i], a2)
+		a3 = fma(dftpf.voltages_buffers[3][i], dftpf.dft_exps[i], a3)
+		a4 = fma(dftpf.voltages_buffers[4][i], dftpf.dft_exps[i], a4)
+	end
+	return (
+		abs(a1) / ofp.blocksize * 2,
+		abs(a2) / ofp.blocksize * 2,
+		abs(a3) / ofp.blocksize * 2,
+		abs(a4) / ofp.blocksize * 2
+	)
+end
