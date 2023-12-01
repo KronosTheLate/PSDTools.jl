@@ -1,3 +1,4 @@
+using LinearAlgebra
 using DataStructures
 using Base.Iterators
 using EasyFFTs
@@ -177,10 +178,11 @@ mutable struct OnlineDFTProbes{T}
 	blocksize::Int  		# Used for getting amplitude
 	#signal_duration # computed from fs and blocksize
 	#n_oscillations
-	dft_exps::Vector{T}
+	dft_exps::Vector{Complex{T}}
 	dft_exps_ind::Int
-	terms_in_sum_buffers::NTuple{4, CircularBuffer{T}}
-	sums_of_terms::AbstractVector{T}
+	terms_in_sum_buffers::NTuple{4, CircularBuffer{Complex{T}}}
+	sums_of_terms::Vector{Complex{T}}
+	lock_sums_of_terms::ReentrantLock
 end
 export OnlineDFTProbes
 
@@ -188,63 +190,78 @@ function show(io::IO, ofp::OnlineDFTProbes)
 	print(io, string("Set of 4 Online DFT probes. fs = ", ofp.fs, ", f_probe = ", ofp.f_probe, " blocklength = ", ofp.blocksize))
 end
 
-function OnlineDFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=ComplexF32)
+function OnlineDFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=Float32)
 
 	N_osc_of_f_probe_per_fs_period = f_probe//fs
 	N_osc_of_fs_per_f_probe_period = inv(N_osc_of_f_probe_per_fs_period)
 	dft_exponentials_periodicity_in_samples = N_osc_of_fs_per_f_probe_period.num * N_osc_of_fs_per_f_probe_period.den
 	
-	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:dft_exponentials_periodicity_in_samples-1]
+	dft_exps = Complex{T}[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:dft_exponentials_periodicity_in_samples-1]
 
 	dft_exps_ind = 1
 	terms_in_sum_buffers = (
-		CircularBuffer{T}(blocksize),
-		CircularBuffer{T}(blocksize),
-		CircularBuffer{T}(blocksize),
-		CircularBuffer{T}(blocksize)
+		CircularBuffer{Complex{T}}(blocksize),
+		CircularBuffer{Complex{T}}(blocksize),
+		CircularBuffer{Complex{T}}(blocksize),
+		CircularBuffer{Complex{T}}(blocksize)
 	)
 
 	# Initialize to zeros. Means first few measurements are trash
 	# but it means we do not have to deal with edge-case of semi-full buffer
 	# Edge-case needs handling in hot-loop --> performance hit
 	for terms_in_sum_buffer in terms_in_sum_buffers
-		foreach(_->push!(terms_in_sum_buffer, zero(T)), 1:blocksize)
+		foreach(_->push!(terms_in_sum_buffer, zero(Complex{T})), 1:blocksize)
 	end
 
-	sums_of_terms = [zero(T), zero(T), zero(T), zero(T)]
+	sums_of_terms = [zero(Complex{T}), zero(Complex{T}), zero(Complex{T}), zero(Complex{T})]
+	lock_sums_of_terms = ReentrantLock()
 	#return typeof(sum_of_terms)
-	return OnlineDFTProbes{T}(fs, f_probe, blocksize, dft_exps, dft_exps_ind, terms_in_sum_buffers, sums_of_terms)
+	return OnlineDFTProbes{T}(fs, f_probe, blocksize, dft_exps, dft_exps_ind, terms_in_sum_buffers, sums_of_terms, lock_sums_of_terms)
 end
 
-function push!(ofp::OnlineDFTProbes, datapoints::NTuple{4, A}) where {A<:Number}
-	for i in 1:4
-		ofp.sums_of_terms[i] -= first(ofp.terms_in_sum_buffers[i])
-	end
-	
+function push!(ofp::OnlineDFTProbes{T}, datapoints::NTuple{4, T}) where {T<:AbstractFloat}
 	new_terms = datapoints .* ofp.dft_exps[ofp.dft_exps_ind]
-	
-	# Possible optimization: store length(ofp.dft_exps) in field in struct 
-	# to avoid quering it every time. Not that length(ofp.dft_exps) != blocksize!
 	ofp.dft_exps_ind = ofp.dft_exps_ind % length(ofp.dft_exps) + 1
 
+	lock(ofp.lock_sums_of_terms) do
+		ofp.sums_of_terms .+= new_terms
+		for i in eachindex(ofp.sums_of_terms)
+			ofp.sums_of_terms[i] -= first(ofp.terms_in_sum_buffers[i])
+		end
+	end
+
 	push!.(ofp.terms_in_sum_buffers, new_terms)
-	ofp.sums_of_terms .+= new_terms
 	return nothing
 end
 
-function push!(ofp::OnlineDFTProbes, datapointss::AbstractVector)
+function push!(ofp::OnlineDFTProbes, datapointss::AbstractVector{NTuple{4, A}}) where {A<:Number}
+	lock(ofp.lock_sums_of_terms)
 	for datapoints in datapointss
-		push!(ofp, datapoints)
+		
+		new_terms = datapoints .* ofp.dft_exps[ofp.dft_exps_ind]
+		ofp.dft_exps_ind = ofp.dft_exps_ind % length(ofp.dft_exps) + 1
+
+		ofp.sums_of_terms .+= new_terms
+		for i in eachindex(ofp.sums_of_terms)
+			ofp.sums_of_terms[i] -= first(ofp.terms_in_sum_buffers[i])
+		end
+
+		push!.(ofp.terms_in_sum_buffers, new_terms)
 	end
+	unlock(ofp.lock_sums_of_terms)
+	return nothing
 end
 
 function amplitudes(ofp::OnlineDFTProbes)
-	return (
+	lock(ofp.lock_sums_of_terms)
+	return_val = (
 		abs(ofp.sums_of_terms[1]) / ofp.blocksize * 2,
 		abs(ofp.sums_of_terms[2]) / ofp.blocksize * 2,
 		abs(ofp.sums_of_terms[3]) / ofp.blocksize * 2,
 		abs(ofp.sums_of_terms[4]) / ofp.blocksize * 2
 	)
+	unlock(ofp.lock_sums_of_terms)
+	return return_val
 end
 export amplitudes
 
@@ -262,38 +279,25 @@ mutable struct DFTProbes{T}
 	#n_oscillations
 	dft_exps::Vector{Complex{T}}
 	voltages_buffers::NTuple{4, CircularBuffer{T}}
+	lock_voltages_buffers::ReentrantLock
 end
-export OnlineDFTProbes
+export DFTProbes
 
 function show(io::IO, ofp::DFTProbes)
 	print(io, string("Set of 4 DFT probes. fs = ", ofp.fs, ", f_probe = ", ofp.f_probe, " blocklength = ", ofp.blocksize))
 end
 
-
-function DFTProbe(fs, f_probe, blocksize, T=ComplexF32)
-	N_osc_of_f_probe_per_fs_period = f_probe//fs
-	dft_exps = T[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:blocksize-1]
-	datapoints = CircularBuffer{T}(blocksize)
-
-	# Initialize to zeros. Means first few measurements are trash
-	# but it means we do not have to deal with edge-case of semi-full buffer
-	# Edge-case needs handling in hot-loop --> performance hit
-	foreach(_->push!(datapoints, zero(T)), 1:blocksize)
-	return DFTProbe{T}(fs, f_probe, blocksize, dft_exps, datapoints)
-end
-
-
-function OnlineDFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=Float32)
+function DFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=Float32)
 
 	N_osc_of_f_probe_per_fs_period = f_probe//fs
 	
 	dft_exps = Complex{T}[cispi(-2*N_osc_of_f_probe_per_fs_period*j) for j in 0:blocksize-1]
 
 	voltages_buffers = (
-		CircularBuffer{Complex{T}}(blocksize),
-		CircularBuffer{Complex{T}}(blocksize),
-		CircularBuffer{Complex{T}}(blocksize),
-		CircularBuffer{Complex{T}}(blocksize)
+		CircularBuffer{T}(blocksize),
+		CircularBuffer{T}(blocksize),
+		CircularBuffer{T}(blocksize),
+		CircularBuffer{T}(blocksize)
 	)
 
 	# Initialize to zeros. Means first few measurements are trash
@@ -302,37 +306,33 @@ function OnlineDFTProbes(fs::Int, f_probe::Int, blocksize::Int, T=Float32)
 	for voltages_buffer in voltages_buffers
 		foreach(_->push!(voltages_buffer, zero(Complex{T})), 1:blocksize)
 	end
-
-	return DFTProbes{T}(fs, f_probe, blocksize, dft_exps, voltages_buffers)
+	lock_voltages_buffers = ReentrantLock()
+	return DFTProbes{T}(fs, f_probe, blocksize, dft_exps, voltages_buffers, lock_voltages_buffers)
 end
 
 function push!(dftps::DFTProbes{T}, datapoints::NTuple{4, T}) where {T<:Number}
+	lock(dftps.lock_voltages_buffers)
 	push!.(dftps.voltages_buffers, datapoints)
+	unlock(dftps.lock_voltages_buffers)
 	return nothing
 end
 
 function push!(dftps::DFTProbes, datapointss::AbstractVector)
+	lock(dftps.lock_voltages_buffers)
 	for datapoints in datapointss
 		push!(dftps, datapoints)
 	end
+	unlock(dftps.lock_voltages_buffers)
+	return nothing
 end
 
-function amplitudes(dftps::DFTProbes{T}) where {T<:Number}
-	a1 = zero(Complex{T})
-	a2 = zero(Complex{T})
-	a3 = zero(Complex{T})
-	a4 = zero(Complex{T})
-	
-	for i in eachindex(dftps.dft_exps)
-		a1 = fma(dftpf.voltages_buffers[1][i], dftpf.dft_exps[i], a1)
-		a2 = fma(dftpf.voltages_buffers[2][i], dftpf.dft_exps[i], a2)
-		a3 = fma(dftpf.voltages_buffers[3][i], dftpf.dft_exps[i], a3)
-		a4 = fma(dftpf.voltages_buffers[4][i], dftpf.dft_exps[i], a4)
+function amplitudes(dftps::DFTProbes)
+	lock(dftps.lock_voltages_buffers) do
+		return (
+			abs(dftps.voltages_buffers[1] ⋅ dftps.dft_exps) / dftps.blocksize * 2,
+			abs(dftps.voltages_buffers[2] ⋅ dftps.dft_exps) / dftps.blocksize * 2,
+			abs(dftps.voltages_buffers[3] ⋅ dftps.dft_exps) / dftps.blocksize * 2,
+			abs(dftps.voltages_buffers[4] ⋅ dftps.dft_exps) / dftps.blocksize * 2
+		)
 	end
-	return (
-		abs(a1) / ofp.blocksize * 2,
-		abs(a2) / ofp.blocksize * 2,
-		abs(a3) / ofp.blocksize * 2,
-		abs(a4) / ofp.blocksize * 2
-	)
 end
