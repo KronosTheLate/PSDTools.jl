@@ -35,9 +35,9 @@ let
     f_true = 10_000
     f_probe = f_true
     f_bandwidth = 100
-    T = Float64
+    # T = Float32
 
-    frmsps = FiltRMSProbes(fs, n_filter, n_samples, f_probe, f_bandwidth, T)
+    frmsps = FiltRMSProbes(fs, n_filter, n_samples, f_probe, f_bandwidth)
     
     filter_order = 8
     bandwidth = 100

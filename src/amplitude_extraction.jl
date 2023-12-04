@@ -86,7 +86,7 @@ struct FiltRMSProbes{T}
 end
 export FiltRMSProbes
 
-function FiltRMSProbes(fs, n_filter, n_samples, f_probe, f_bandwidth, T=Float32)
+function FiltRMSProbes(fs, n_filter, n_samples, f_probe, f_bandwidth, T=typeof(1.0))
 	f = make_filter_bandpass(f_probe, n_filter, f_bandwidth; fs)
 	stateful_filters = (
 		DF2TFilter(SecondOrderSections(f)), 
@@ -114,7 +114,7 @@ function push!(x::FiltRMSProbes, datapoints::NTuple{4, <:Number})
 	return nothing
 end
 
-function amplitude(x::FiltRMSProbes)
+function amplitudes(x::FiltRMSProbes)
 	# We intentionally do not divide by √2, as the position estiamtes are the same
 	return rms.(x.buffers_filtered_samples)
 end
