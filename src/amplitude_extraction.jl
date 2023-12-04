@@ -74,23 +74,25 @@ export make_estimator_filter_and_RMS_corrected
 ##!====================================================================================!##
 ##!====================================================================================!##
 ##!====================================================================================!##
-
-struct Placeholder{T}
+#
+struct FiltRMSProbes{T}
 	fs::Int
 	n_filter::Int
 	n_samples::Int
-	filter_coeffs_reversed::Vector{T}  # Reversed, as this is what is used in dot product. From convolution
-	buffers_unfiltered_samples::NTuple{4, CircularBuffer{T}}
+	stateful_filters::NTuple{4, DF2TFilter{SecondOrderSections{:z, T, T}}}  # Reversed, as this is what is used in dot product. From convolution
 	buffers_filtered_samples::NTuple{4, CircularBuffer{T}}
+	internal_buffer_input_samples::Vector{Vector{T}}
+	internal_buffer_filtered_samples::Vector{Vector{T}}
 end
+export FiltRMSProbes
 
-function Placeholder(fs, n_filter, n_samples, f_center, f_bandwidth, T::Float32)
-	f = make_filter_bandpass(f_center, n_filter, f_bandwidth; fs)
-	buffers_unfiltered_samples = (
-		CircularBuffer{T}(n_filter),
-		CircularBuffer{T}(n_filter),
-		CircularBuffer{T}(n_filter),
-		CircularBuffer{T}(n_filter)
+function FiltRMSProbes(fs, n_filter, n_samples, f_probe, f_bandwidth, T=Float32)
+	f = make_filter_bandpass(f_probe, n_filter, f_bandwidth; fs)
+	stateful_filters = (
+		DF2TFilter(SecondOrderSections(f)), 
+		DF2TFilter(SecondOrderSections(f)), 
+		DF2TFilter(SecondOrderSections(f)), 
+		DF2TFilter(SecondOrderSections(f)), 
 	)
 	buffers_filtered_samples = (
 		CircularBuffer{T}(n_samples),
@@ -98,18 +100,21 @@ function Placeholder(fs, n_filter, n_samples, f_center, f_bandwidth, T::Float32)
 		CircularBuffer{T}(n_samples),
 		CircularBuffer{T}(n_samples)
 	)
-	filter_coeffs = nothing
-	return Placeholder{T}(fs, n_filter, f_samples, filter_coeffs, buffers_unfiltered_samples, buffers_filtered_samples)
+	internal_buffer_input_samples = [zeros(T, 1), zeros(T, 1), zeros(T, 1), zeros(T, 1)]
+	internal_buffer_filtered_samples = [zeros(T, 1), zeros(T, 1), zeros(T, 1), zeros(T, 1)]
+	return FiltRMSProbes{T}(fs, n_filter, n_samples, stateful_filters, buffers_filtered_samples, internal_buffer_input_samples, internal_buffer_filtered_samples)
 end
 
-function push!(x::Placeholder, datapoints::NTuple{4, <:Number})
-	push!.(x.buffers_unfiltered_samples, datapoints)
-	filtered_samples = collect_tuple(x.filter_coeffs_reversed ⋅ x.buffers_unfiltered_samples[i] for i in 1:4)
-	push!.(x.buffers_filtered_samples, filtered_samples)
+function push!(x::FiltRMSProbes, datapoints::NTuple{4, <:Number})
+	for i in eachindex(datapoints)
+		x.internal_buffer_input_samples[i][1] = datapoints[i]
+		filt!(x.internal_buffer_filtered_samples[i], x.stateful_filters[i], x.internal_buffer_input_samples[i])
+		push!(x.buffers_filtered_samples[i], x.internal_buffer_filtered_samples[i][1])
+	end
 	return nothing
 end
 
-function amplitude(x::Placeholder)
+function amplitude(x::FiltRMSProbes)
 	# We intentionally do not divide by √2, as the position estiamtes are the same
 	return rms.(x.buffers_filtered_samples)
 end
